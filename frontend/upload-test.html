@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Card Image Upload Test</title>
+
+<style>
+  body {
+    font-family: Arial;
+    max-width: 600px;
+    margin: 30px auto;
+  }
+  input, select {
+    width: 100%;
+    padding: 10px;
+    margin-bottom: 12px;
+    font-size: 16px;
+  }
+  button {
+    padding: 12px;
+    background: #1976d2;
+    color: white;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  img {
+    max-width: 100%;
+    margin-top: 20px;
+    display: none;
+  }
+</style>
+</head>
+<body>
+
+<h2>Test Image Upload</h2>
+
+<form id="uploadForm">
+  <label>Card Name</label>
+  <input type="text" name="name" placeholder="Charizard" required />
+
+  <label>Select Image</label>
+  <input type="file" id="imageInput" name="image" accept="image/*" required />
+
+  <button type="submit">Upload</button>
+</form>
+
+<h3 id="status"></h3>
+<img id="previewImage" />
+
+<script>
+document.getElementById("uploadForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const form = event.target;
+  const formData = new FormData();
+
+  const name = form.name.value;
+  const imageFile = document.getElementById("imageInput").files[0];
+
+  formData.append("name", name);
+  formData.append("image", imageFile);
+
+  document.getElementById("status").textContent = "Uploading...";
+
+  try {
+    const response = await fetch("http://localhost:5000/api/cards/upload", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      document.getElementById("status").textContent = "❌ Error: " + data.error;
+      return;
+    }
+
+    document.getElementById("status").textContent = "✅ Upload Successful!";
+    document.getElementById("previewImage").src = data.imageurl;
+    document.getElementById("previewImage").style.display = "block";
+
+  } catch (err) {
+    document.getElementById("status").textContent = "❌ Upload failed: " + err.message;
+  }
+});
+</script>
+
+</body>
+</html>

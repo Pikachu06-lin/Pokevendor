@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>PokéVendor AI Card Upload</title>
+<style>
+  body { font-family: Arial, sans-serif; padding: 20px; }
+  input, button { margin: 5px 0; display: block; }
+  #uploadForm { display: none; margin-top: 20px; }
+  .error { color: red; }
+  .success { color: green; }
+</style>
+</head>
+<body>
+
+<h1>PokéVendor AI Card Upload</h1>
+
+<div id="loginDiv">
+  <h2>Admin Login</h2>
+  <input type="email" id="email" placeholder="Email">
+  <input type="password" id="password" placeholder="Password">
+  <button id="loginBtn">Login</button>
+  <div id="loginMsg"></div>
+</div>
+
+<div id="uploadForm">
+  <h2>Upload Card Image</h2>
+  <input type="text" id="cardName" placeholder="Card Name">
+  <input type="file" id="cardImage">
+  <button id="uploadBtn">Upload</button>
+  <div id="uploadMsg"></div>
+</div>
+
+<script>
+const backendUrl = "http://localhost:5000/api/cards";
+let token = null;
+
+// --- LOGIN ---
+document.getElementById('loginBtn').addEventListener('click', async () => {
+  const email = document.getElementById('email').value;
+  const password = document.getElementById('password').value;
+
+  try {
+    const resp = await fetch(`${backendUrl.replace("/cards","/auth")}/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password })
+    });
+
+    if (!resp.ok) throw new Error(`Login failed: ${resp.status}`);
+    const data = await resp.json();
+    token = data.token;
+    document.getElementById('loginMsg').textContent = "✅ Logged in!";
+    document.getElementById('loginMsg').className = "success";
+
+    // Show upload form
+    document.getElementById('uploadForm').style.display = "block";
+    document.getElementById('loginDiv').style.display = "none";
+
+  } catch(err) {
+    document.getElementById('loginMsg').textContent = "❌ " + err.message;
+    document.getElementById('loginMsg').className = "error";
+  }
+});
+
+// --- UPLOAD IMAGE ---
+document.getElementById('uploadBtn').addEventListener('click', async () => {
+  const file = document.getElementById('cardImage').files[0];
+  const cardName = document.getElementById('cardName').value;
+
+  if (!file || !cardName) {
+    document.getElementById('uploadMsg').textContent = "❌ Card name and image required.";
+    document.getElementById('uploadMsg').className = "error";
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = async () => {
+    const base64Image = reader.result.split(",")[1]; // remove data:image/...;base64,
+
+    try {
+      const resp = await fetch(`${backendUrl}/identify`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          mode: "2",
+          base64Image,
+          name: cardName
+        })
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        throw new Error(text);
+      }
+
+      const data = await resp.json();
+      document.getElementById('uploadMsg').textContent = "✅ Upload successful! Card ID: " + data.card.id;
+      document.getElementById('uploadMsg').className = "success";
+
+    } catch(err) {
+      document.getElementById('uploadMsg').textContent = "❌ Upload failed: " + err.message;
+      document.getElementById('uploadMsg').className = "error";
+    }
+  };
+
+  reader.readAsDataURL(file);
+});
+</script>
+
+</body>
+</html>
