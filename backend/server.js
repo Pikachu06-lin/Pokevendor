@@ -1,47 +1,68 @@
 // server.js
-// Main server file supporting both TCGdex and JustTCG APIs - ES Module Version
-import 'dotenv/config';
+// Main server file supporting TCGdex API
+
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 
+// IMPORTANT: Load environment variables FIRST before any other imports
+dotenv.config();
 
 // ES Module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load environment variables
-//dotenv.config();
+// Now import modules that need env variables
+import supabaseInventory from './services/supabase-inventory.js';
+import { identifyCardFromBase64 } from './services/gemini.js';
 
-/*
-Used for debugging
-console.log('=== DOTENV LOADED ===');
-console.log('Current directory:', __dirname);
-console.log('GEMINI_API_KEY from process.env:', process.env.GEMINI_API_KEY);
-console.log('All env keys:', Object.keys(process.env).filter(k => k.includes('GEMINI')));
-console.log('==================');
-*/
 const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
+app.use(express.urlencoded({ extended: true, limit: '50mb' })); // Increased limit for form data
 
 // Serve static files from frontend folder (one level up from backend)
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
 
-// Import routes
-// Import your existing TCGdex routes (keep these as-is)
-// import tcgdexRoutes from './routes/tcgdex-routes.js'; // Your existing routes
-
-// Import new JustTCG routes
-import justtcgRoutes from './routes/justtcg-routes.js';
-
 // Mount routes
-// app.use('/api/tcgdex', tcgdexRoutes); // Your existing TCGdex routes (uncomment when ready)
-app.use('/api/justtcg', justtcgRoutes); // New JustTCG routes
+// No JustTCG routes needed
+
+// AI Card Identification endpoint (for Gemini AI)
+app.post('/api/cards/identify-image', async (req, res) => {
+  try {
+    const { base64Image, language } = req.body;
+
+    if (!base64Image) {
+      return res.status(400).json({ error: 'Image data is required' });
+    }
+
+    // Use your existing Gemini service
+    const cardData = await identifyCardFromBase64(base64Image, language || 'en');
+
+    res.json({
+      success: true,
+      card: {
+        name: cardData.name,
+        set: cardData.set,
+        setNumber: cardData.setNumber,
+        rarity: cardData.rarity,
+        language: cardData.language,
+        confidence: 1.0
+      }
+    });
+
+  } catch (error) {
+    console.error('Error identifying card:', error);
+    res.status(500).json({ 
+      error: 'AI identification failed',
+      details: error.message 
+    });
+  }
+});
 
 // Shared authentication endpoint (used by both)
 app.post('/api/login', async (req, res) => {
@@ -89,24 +110,20 @@ app.post('/api/add-to-inventory', async (req, res) => {
       return res.status(400).json({ error: 'Card data is required' });
     }
 
-    // TODO: Implement your inventory database logic here
     const inventoryItem = {
-      ...card,
+      card: card,
       condition: condition,
       language: language,
-      addedAt: new Date().toISOString(),
-      source: card.source || 'unknown' // Track which API was used
+      source: card.source || 'unknown'
     };
 
-    // Example: Save to database
-    // await InventoryModel.create(inventoryItem);
-
-    console.log('Adding to inventory:', inventoryItem);
+    // Save to Supabase
+    const savedItem = await supabaseInventory.addCard(inventoryItem);
 
     res.json({
       success: true,
       message: 'Card added to inventory successfully',
-      item: inventoryItem
+      item: savedItem
     });
 
   } catch (error) {
@@ -118,25 +135,99 @@ app.post('/api/add-to-inventory', async (req, res) => {
   }
 });
 
+// Get inventory count for a specific card
+app.get('/api/inventory/count', async (req, res) => {
+  try {
+    const { cardName, setName } = req.query;
+
+    if (!cardName) {
+      return res.status(400).json({ error: 'Card name is required' });
+    }
+
+    const count = await supabaseInventory.getCardCount(cardName, setName);
+
+    res.json({
+      success: true,
+      cardName: cardName,
+      setName: setName,
+      count: count
+    });
+
+  } catch (error) {
+    console.error('Error getting inventory count:', error);
+    res.status(500).json({ 
+      error: 'Failed to get inventory count',
+      details: error.message 
+    });
+  }
+});
+
+// Get all inventory items
+app.get('/api/inventory', async (req, res) => {
+  try {
+    const filters = {
+      cardName: req.query.cardName,
+      setName: req.query.setName,
+      language: req.query.language,
+      condition: req.query.condition,
+      source: req.query.source
+    };
+
+    // Remove undefined filters
+    Object.keys(filters).forEach(key => {
+      if (filters[key] === undefined) delete filters[key];
+    });
+
+    const items = Object.keys(filters).length > 0 
+      ? await supabaseInventory.getItems(filters)
+      : await supabaseInventory.getAllItems();
+
+    res.json({
+      success: true,
+      items: items,
+      count: items.length
+    });
+
+  } catch (error) {
+    console.error('Error getting inventory:', error);
+    res.status(500).json({ 
+      error: 'Failed to get inventory',
+      details: error.message 
+    });
+  }
+});
+
+// Get inventory statistics
+app.get('/api/inventory/stats', async (req, res) => {
+  try {
+    const stats = await supabaseInventory.getStats();
+    res.json({
+      success: true,
+      stats: stats
+    });
+  } catch (error) {
+    console.error('Error getting inventory stats:', error);
+    res.status(500).json({ 
+      error: 'Failed to get inventory stats',
+      details: error.message 
+    });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     apis: {
-      tcgdex: 'active',
-      justtcg: process.env.JUSTTCG_API_KEY ? 'active' : 'not configured'
+      tcgdex: 'active'
     },
     timestamp: new Date().toISOString()
   });
 });
 
-// Route to serve different upload pages
+// Route to serve main page
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html')); // TCGdex page
-});
-
-app.get('/japanese', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'frontend', 'justtcg-upload.html')); // JustTCG page
 });
 
 // 404 handler
@@ -163,10 +254,10 @@ app.listen(PORT, () => {
   ║                                                           ║
   ║   Port: ${PORT}                                             ║
   ║                                                           ║
-  ║   English Cards (TCGdex):  http://localhost:${PORT}       ║
-  ║   Japanese Cards (JustTCG): http://localhost:${PORT}/japanese  ║
+  ║   Card Upload (TCGdex):  http://localhost:${PORT}         ║
   ║                                                           ║
   ║   API Status: http://localhost:${PORT}/api/health         ║
+  ║   Inventory Stats: http://localhost:${PORT}/api/inventory/stats  ║
   ║                                                           ║
   ╚═══════════════════════════════════════════════════════════╝
   `);
