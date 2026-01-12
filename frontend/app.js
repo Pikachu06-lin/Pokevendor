@@ -1,9 +1,9 @@
 // Configuration
 const config = {
   backendUrl: "http://localhost:5000",
-  loginEndpoint: "/api/auth/login",
-  identifyImageEndpoint: "/api/cards/identify-image",
-  addCardEndpoint: "/api/cards/identify"
+  loginEndpoint: "/api/login",
+  identifyImageEndpoint: "/api/justtcg/identify-card",
+  addCardEndpoint: "/api/add-to-inventory"
 };
 
 // State
@@ -11,6 +11,8 @@ let token = null;
 let allFoundCards = [];
 let currentPage = 1;
 const cardsPerPage = 20;
+let selectedFile = null;
+let selectedAPI = 'auto'; // 'auto', 'justtcg', 'tcgdex'
 
 // ===== UI EVENT LISTENERS =====
 
@@ -19,6 +21,7 @@ document.getElementById('cardImage').addEventListener('change', function(e) {
   const preview = document.getElementById('imagePreview');
   
   if (file) {
+    selectedFile = file;
     const reader = new FileReader();
     reader.onload = function(e) {
       preview.src = e.target.result;
@@ -26,6 +29,7 @@ document.getElementById('cardImage').addEventListener('change', function(e) {
     };
     reader.readAsDataURL(file);
   } else {
+    selectedFile = null;
     preview.style.display = 'none';
   }
 });
@@ -43,6 +47,15 @@ document.getElementById('password').addEventListener('keypress', function(e) {
 document.getElementById('email').addEventListener('keypress', function(e) {
   if (e.key === 'Enter') document.getElementById('loginBtn').click();
 });
+
+// API Selector
+const apiSelector = document.getElementById('apiSelector');
+if (apiSelector) {
+  apiSelector.addEventListener('change', function(e) {
+    selectedAPI = e.target.value;
+    console.log('API selector changed to:', selectedAPI);
+  });
+}
 
 // ===== AUTH HANDLERS =====
 
@@ -91,6 +104,7 @@ async function handleLogin() {
 
 function handleLogout() {
   token = null;
+  selectedFile = null;
   document.getElementById('uploadForm').style.display = "none";
   document.getElementById('loginDiv').style.display = "block";
   document.getElementById('cardSelection').style.display = "none";
@@ -103,7 +117,7 @@ function handleLogout() {
 
 // ===== CARD IDENTIFICATION =====
 
-async function identifyCardWithBackend(base64Image, targetLanguage) {
+async function identifyCardWithBackend(file, targetLanguage) {
   const manualName = document.getElementById('cardName').value.trim();
   
   if (manualName) {
@@ -111,16 +125,17 @@ async function identifyCardWithBackend(base64Image, targetLanguage) {
   }
   
   try {
+    const formData = new FormData();
+    formData.append('image', file);
+    formData.append('language', targetLanguage);
+    formData.append('cardName', '');
+    
     const response = await fetch(config.backendUrl + config.identifyImageEndpoint, {
       method: "POST",
       headers: { 
-        "Content-Type": "application/json",
         "Authorization": "Bearer " + token
       },
-      body: JSON.stringify({ 
-        base64Image: base64Image,
-        language: targetLanguage 
-      })
+      body: formData
     });
     
     const data = await response.json();
@@ -129,8 +144,21 @@ async function identifyCardWithBackend(base64Image, targetLanguage) {
       throw new Error(data.error || data.details || "AI identification failed");
     }
     
-    console.log("✅ AI Identified Card:", data.card);
-    return data.card;
+    console.log("✅ Backend Response:", data);
+    
+    if (data.aiIdentification && data.aiIdentification.cardName) {
+      return {
+        name: data.aiIdentification.cardName,
+        set: data.aiIdentification.setName,
+        cards: data.cards
+      };
+    }
+    
+    return {
+      name: data.cards?.[0]?.name || 'Unknown',
+      set: null,
+      cards: data.cards
+    };
     
   } catch (err) {
     console.error("Backend identification error:", err);
@@ -317,25 +345,49 @@ function displayCards(cards, page, language, condition) {
     const globalIdx = startIdx + idx;
     const li = document.createElement('li');
     
-    const marketPrice = extractMarketPrice(c);
-    const defaultPrice = marketPrice || '10.00';
-    const priceNote = marketPrice ? '' : ' (Market price unavailable - please set manually)';
+    // Debug logging
+    console.log('Displaying card:', c);
+    console.log('Card source:', c.source);
+    console.log('Card image_url:', c.image_url);
+    console.log('Card image:', c.image);
+    
+    const isJustTCG = c.source === 'justtcg';
+    
+    let marketPrice, defaultPrice, priceNote;
+    if (isJustTCG) {
+      marketPrice = c.price ? (c.price / 100).toFixed(2) : null;
+      defaultPrice = marketPrice || '10.00';
+      priceNote = marketPrice ? '' : ' (Market price unavailable - please set manually)';
+    } else {
+      marketPrice = extractMarketPrice(c);
+      defaultPrice = marketPrice || '10.00';
+      priceNote = marketPrice ? '' : ' (Market price unavailable - please set manually)';
+    }
     
     let imageUrl = 'https://placehold.co/70x100/94A3B8/ffffff?text=No+Image';
+    let imageFallback = imageUrl;
     
-    if (c.image) {
-      if (typeof c.image === 'string') {
-        imageUrl = c.image + '/high.webp';
-      } else if (typeof c.image === 'object') {
-        if (c.image.small) imageUrl = c.image.small;
-        else if (c.image.high) imageUrl = c.image.high;
+    if (isJustTCG) {
+      if (c.image_url) {
+        imageUrl = c.image_url;
+        imageFallback = c.image_url;
+      }
+    } else {
+      if (c.image) {
+        if (typeof c.image === 'string') {
+          imageUrl = c.image + '/high.webp';
+          imageFallback = c.image + '/high.jpg';
+        } else if (typeof c.image === 'object') {
+          if (c.image.small) imageUrl = c.image.small;
+          else if (c.image.high) imageUrl = c.image.high;
+          imageFallback = imageUrl;
+        }
       }
     }
     
-    const imageFallback = c.image ? c.image + '/high.jpg' : imageUrl;
     const cardName = c.name || 'Unknown';
-    const setName = (c.set && c.set.name) || 'Unknown Set';
-    const cardNumber = c.localId || c.id || '?';
+    const setName = isJustTCG ? (c.set_name || 'Unknown Set') : ((c.set && c.set.name) || 'Unknown Set');
+    const cardNumber = isJustTCG ? (c.number || '?') : (c.localId || c.id || '?');
     const cardRarity = c.rarity || 'Unknown';
     const priceDisplay = marketPrice ? '$' + marketPrice : 'N/A';
     
@@ -386,6 +438,7 @@ function setupCardButtons(language, condition) {
         document.getElementById('cardName').value = '';
         document.getElementById('imagePreview').style.display = 'none';
         document.getElementById('uploadMsg').textContent = "";
+        selectedFile = null;
         allFoundCards = [];
         currentPage = 1;
         
@@ -400,31 +453,40 @@ function setupCardButtons(language, condition) {
 }
 
 async function addCardToInventory(card, listedPrice, language, condition) {
-  const marketPrice = extractMarketPrice(card);
+  const isJustTCG = card.source === 'justtcg';
   
-  let imageUrl = null;
-  if (card.image) {
-    if (typeof card.image === 'string') {
-      imageUrl = card.image + '/high.webp';
-    } else if (card.image.small) {
-      imageUrl = card.image.small;
-    } else if (card.image.high) {
-      imageUrl = card.image.high;
+  let marketPrice, imageUrl;
+  
+  if (isJustTCG) {
+    // JustTCG price is in dollars already
+    marketPrice = card.price ? card.price.toFixed(2) : null;
+    imageUrl = card.image_url || null;
+  } else {
+    marketPrice = extractMarketPrice(card);
+    if (card.image) {
+      if (typeof card.image === 'string') {
+        imageUrl = card.image + '/high.webp';
+      } else if (card.image.small) {
+        imageUrl = card.image.small;
+      } else if (card.image.high) {
+        imageUrl = card.image.high;
+      }
     }
   }
   
   const cardPayload = {
-    mode: "1", 
-    name: card.name,
-    set: (card.set && card.set.name) || 'Unknown Set',
-    number: card.localId || card.id || '',
-    rarity: card.rarity || 'Unknown',
-    language: language === 'ja' ? 'Japanese' : (language === 'en' ? 'English' : language), 
+    card: {
+      name: card.name,
+      set_name: isJustTCG ? card.set_name : ((card.set && card.set.name) || 'Unknown Set'),
+      number: isJustTCG ? card.number : (card.localId || card.id || ''),
+      rarity: card.rarity || 'Unknown',
+      image_url: imageUrl,
+      price: marketPrice ? parseFloat(marketPrice) * 100 : 0,
+      source: isJustTCG ? 'justtcg' : 'tcgdex',
+      listedPrice: listedPrice
+    },
     condition: condition,
-    marketprice: marketPrice,
-    listedprice: listedPrice,
-    availability: true,
-    imageurl: imageUrl
+    language: language === 'ja' ? 'Japanese' : (language === 'en' ? 'English' : language)
   };
   
   console.log("Sending card payload:", cardPayload);
@@ -480,7 +542,7 @@ function handleNextPage() {
 // ===== UPLOAD HANDLER =====
 
 async function handleUpload() {
-  const file = document.getElementById('cardImage').files[0];
+  const file = selectedFile || document.getElementById('cardImage').files[0];
   const condition = document.getElementById('condition').value;
   const language = document.getElementById('language').value;
   const uploadMsgDiv = document.getElementById('uploadMsg');
@@ -495,34 +557,68 @@ async function handleUpload() {
   showMessage(uploadMsgDiv, "🤖 Processing image with AI...", "info");
 
   try {
-    const base64 = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+    // If user selected TCGdex and provided manual name, skip AI
+    if (selectedAPI === 'tcgdex' && document.getElementById('cardName').value.trim()) {
+      const manualName = document.getElementById('cardName').value.trim();
+      showMessage(uploadMsgDiv, "🔍 Searching TCGdex for " + manualName + "...", "info");
+      
+      const cards = await fetchCardsFromTCGdex(manualName, null, language);
+      
+      if (cards.length === 0) {
+        throw new Error("No matching cards found for " + manualName);
+      }
 
-    const aiCard = await identifyCardWithBackend(base64, language);
-    if (!aiCard || !aiCard.name) {
+      const sortedCards = sortCardsByRelevance(cards, manualName);
+      allFoundCards = sortedCards;
+      currentPage = 1;
+
+      displayCards(allFoundCards, currentPage, language, condition);
+      document.getElementById('cardSelection').style.display = 'block';
+      showMessage(uploadMsgDiv, "✅ Found " + cards.length + " matching cards from TCGdex", "success");
+      
+      const totalPages = Math.ceil(allFoundCards.length / cardsPerPage);
+      if (totalPages > 1) {
+        document.getElementById('pagination').style.display = 'flex';
+        updatePaginationControls();
+      } else {
+        document.getElementById('pagination').style.display = 'none';
+      }
+      return;
+    }
+    
+    const result = await identifyCardWithBackend(file, language);
+    
+    if (!result || !result.name) {
       throw new Error("AI failed to identify card.");
     }
 
-    showMessage(uploadMsgDiv, "🔍 Searching TCGdex for " + aiCard.name + "...", "info");
-    
-    const cards = await fetchCardsFromTCGdex(aiCard.name, aiCard.set, language);
-    
-    if (cards.length === 0) {
-      throw new Error("No matching cards found for " + aiCard.name);
+    // Check if we should use TCGdex fallback
+    if (result.useTCGdex || !result.cards || result.cards.length === 0) {
+      showMessage(uploadMsgDiv, "🔍 JustTCG has no Japanese cards. Searching TCGdex for " + result.name + "...", "info");
+      showMessage(uploadMsgDiv, "✅ Found " + result.cards.length + " matching cards from JustTCG", "success");
+      
+      allFoundCards = result.cards;
+      currentPage = 1;
+      displayCards(allFoundCards, currentPage, language, condition);
+      document.getElementById('cardSelection').style.display = 'block';
+      
+    } else {
+      showMessage(uploadMsgDiv, "🔍 Searching TCGdex for " + result.name + "...", "info");
+      
+      const cards = await fetchCardsFromTCGdex(result.name, result.set, language);
+      
+      if (cards.length === 0) {
+        throw new Error("No matching cards found for " + result.name);
+      }
+
+      const sortedCards = sortCardsByRelevance(cards, result.name);
+      allFoundCards = sortedCards;
+      currentPage = 1;
+
+      displayCards(allFoundCards, currentPage, language, condition);
+      document.getElementById('cardSelection').style.display = 'block';
+      showMessage(uploadMsgDiv, "✅ Found " + cards.length + " matching cards", "success");
     }
-
-    const sortedCards = sortCardsByRelevance(cards, aiCard.name);
-    allFoundCards = sortedCards;
-    currentPage = 1;
-
-    displayCards(allFoundCards, currentPage, language, condition);
-
-    document.getElementById('cardSelection').style.display = 'block';
-    showMessage(uploadMsgDiv, "✅ Found " + cards.length + " matching cards", "success");
     
     const totalPages = Math.ceil(allFoundCards.length / cardsPerPage);
     if (totalPages > 1) {

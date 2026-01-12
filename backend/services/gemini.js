@@ -1,3 +1,4 @@
+//console.log("GEMINI_API_KEY loaded:", process.env.GEMINI_API_KEY);
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import * as fs from 'fs';
 
