@@ -67,17 +67,23 @@ class SupabaseInventory {
   }
 
   /**
-   * Get inventory count for a specific card
+   * Get inventory count for a specific card (by name + set + number)
    */
-  async getCardCount(cardName, setName = null) {
+  async getCardCount(cardName, setName = null, cardNumber = null) {
     try {
       let query = supabase
         .from(this.tableName)
         .select('id', { count: 'exact', head: true })
         .ilike('card_name', cardName);
 
+      // Match by set name if provided
       if (setName) {
         query = query.ilike('set_name', setName);
+      }
+
+      // Match by card number if provided (most specific identifier)
+      if (cardNumber) {
+        query = query.eq('card_number', cardNumber);
       }
 
       const { count, error } = await query;

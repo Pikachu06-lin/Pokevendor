@@ -305,13 +305,16 @@ function extractMarketPrice(card) {
 
 // ===== FETCH INVENTORY COUNT =====
 
-async function fetchInventoryCount(cardName, setName) {
+async function fetchInventoryCount(cardName, setName, cardNumber) {
   try {
     const params = new URLSearchParams({
       cardName: cardName
     });
     if (setName) {
       params.append('setName', setName);
+    }
+    if (cardNumber) {
+      params.append('cardNumber', cardNumber);
     }
 
     const response = await fetch(config.backendUrl + '/api/inventory/count?' + params.toString(), {
@@ -345,7 +348,9 @@ async function displayCards(cards, page, language, condition) {
   // Fetch inventory counts for all cards
   const cardsWithInventory = await Promise.all(
     pageCards.map(async (c) => {
-      const count = await fetchInventoryCount(c.name, c.set && c.set.name);
+      const cardNumber = c.localId || c.id || null;
+      const setName = (c.set && c.set.name) || null;
+      const count = await fetchInventoryCount(c.name, setName, cardNumber);
       return { ...c, inventoryCount: count };
     })
   );

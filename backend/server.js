@@ -138,18 +138,19 @@ app.post('/api/add-to-inventory', async (req, res) => {
 // Get inventory count for a specific card
 app.get('/api/inventory/count', async (req, res) => {
   try {
-    const { cardName, setName } = req.query;
+    const { cardName, setName, cardNumber } = req.query;
 
     if (!cardName) {
       return res.status(400).json({ error: 'Card name is required' });
     }
 
-    const count = await supabaseInventory.getCardCount(cardName, setName);
+    const count = await supabaseInventory.getCardCount(cardName, setName, cardNumber);
 
     res.json({
       success: true,
       cardName: cardName,
       setName: setName,
+      cardNumber: cardNumber,
       count: count
     });
 
