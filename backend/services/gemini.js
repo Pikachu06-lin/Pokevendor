@@ -7,6 +7,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 /**
  * Identifies a Pokémon card from a base64 image string (for frontend uploads)
+ * ALWAYS returns card name in ENGLISH for database searching
  * @param {string} base64Image - Base64 encoded image (with data:image prefix)
  * @param {string} targetLanguage - Target language code (en, ja, fr, etc.)
  * @returns {Promise<{name: string, set: string, setNumber: string, rarity: string, language: string}>}
@@ -23,27 +24,29 @@ export async function identifyCardFromBase64(base64Image, targetLanguage = 'en')
         const mimeType = matches[1];
         const base64Data = matches[2];
         
-        // Build language-specific prompt
-        let languageInstruction = "";
-        if (targetLanguage === 'ja') {
-            languageInstruction = " Return the card name in JAPANESE characters (e.g., ピカチュウVMAX). This is very important - use Japanese text for name and set.";
-        } else if (targetLanguage === 'en') {
-            languageInstruction = " Return the card name in ENGLISH.";
-        } else {
-            languageInstruction = ` Return the card name in the language that matches: ${targetLanguage}`;
-        }
-        
-        const prompt = `Identify this Pokémon card from the image and return only a JSON object with the following keys:
-- name (e.g., "Pikachu VMAX")
-- set (e.g., "Sword & Shield")
-- setNumber (the number printed on the card, e.g., "001" or "156/236")
-- rarity (e.g., "Rare Holo")
-- language (e.g., "English")
-${languageInstruction}
+        // IMPORTANT: Always ask for English name for database searching
+        const prompt = `Identify this Pokémon card from the image. 
+
+CRITICAL INSTRUCTIONS:
+1. Return the card name in ENGLISH, even if the card is in Japanese, French, or any other language
+2. For example: If you see "ピカチュウVMAX" → return "Pikachu VMAX"
+3. If you see "リザードンex" → return "Charizard ex"
+4. Detect the actual language of the physical card for the "language" field
+5. Include all suffixes like V, VMAX, GX, EX, ex, etc. in English
+
+Return ONLY a JSON object with these keys:
+{
+  "name": "Card name in ENGLISH (e.g., Pikachu VMAX)",
+  "set": "Set name if visible (in English if possible)",
+  "setNumber": "Card number (e.g., 001/100)",
+  "rarity": "Rarity if visible",
+  "language": "The actual language of the physical card (English/Japanese/French/etc)"
+}
+
 Do not include any other text, explanations, or markdown formatting. Return ONLY the JSON object.`;
 
-        // Get the generative model
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+        // FIXED: Changed from "gemini-1.5-pro-latest" to "gemini-1.5-flash"
+        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
         
         // Prepare the image part
         const imagePart = {
@@ -72,7 +75,7 @@ Do not include any other text, explanations, or markdown formatting. Return ONLY
             throw new Error("AI did not identify a card name");
         }
         
-        console.log("✅ AI Identified Card:", cardInfo);
+        console.log("✅ AI Identified Card (English name):", cardInfo);
         return cardInfo;
         
     } catch (err) {
@@ -106,7 +109,8 @@ Identify this Pokémon card from the image and return only a JSON object with th
 Do not include any other text, explanations, or markdown formatting.
 `;
 
-        const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash-exp" });
+        // FIXED: Changed from "gemini-1.5-pro-latest" to "gemini-1.5-flash"
+        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
 
         const imagePart = {
             inlineData: {

@@ -1,9 +1,9 @@
 // Configuration
 const config = {
   backendUrl: "http://localhost:5000",
-  loginEndpoint: "/api/auth/login",
+  loginEndpoint: "/api/login",
   identifyImageEndpoint: "/api/cards/identify-image",
-  addCardEndpoint: "/api/cards/identify"
+  addCardEndpoint: "/api/add-to-inventory"
 };
 
 // State
@@ -303,17 +303,61 @@ function extractMarketPrice(card) {
   }
 }
 
+// ===== FETCH INVENTORY COUNT =====
+
+async function fetchInventoryCount(cardName, setName, cardNumber) {
+  try {
+    const params = new URLSearchParams({
+      cardName: cardName
+    });
+    if (setName) {
+      params.append('setName', setName);
+    }
+    if (cardNumber) {
+      params.append('cardNumber', cardNumber);
+    }
+
+    const response = await fetch(config.backendUrl + '/api/inventory/count?' + params.toString(), {
+      method: 'GET',
+      headers: {
+        'Authorization': 'Bearer ' + token
+      }
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return data.count || 0;
+    }
+    return 0;
+  } catch (err) {
+    console.error('Error fetching inventory count:', err);
+    return 0;
+  }
+}
+
 // ===== DISPLAY & PAGINATION =====
 
-function displayCards(cards, page, language, condition) {
+async function displayCards(cards, page, language, condition) {
   const startIdx = (page - 1) * cardsPerPage;
   const endIdx = startIdx + cardsPerPage;
   const pageCards = cards.slice(startIdx, endIdx);
   
   const listEl = document.getElementById('cardList');
+  listEl.innerHTML = '<li style="text-align: center; padding: 20px;">Loading inventory counts...</li>';
+  
+  // Fetch inventory counts for all cards
+  const cardsWithInventory = await Promise.all(
+    pageCards.map(async (c) => {
+      const cardNumber = c.localId || c.id || null;
+      const setName = (c.set && c.set.name) || null;
+      const count = await fetchInventoryCount(c.name, setName, cardNumber);
+      return { ...c, inventoryCount: count };
+    })
+  );
+  
   listEl.innerHTML = '';
   
-  pageCards.forEach((c, idx) => {
+  cardsWithInventory.forEach((c, idx) => {
     const globalIdx = startIdx + idx;
     const li = document.createElement('li');
     
@@ -338,10 +382,14 @@ function displayCards(cards, page, language, condition) {
     const cardNumber = c.localId || c.id || '?';
     const cardRarity = c.rarity || 'Unknown';
     const priceDisplay = marketPrice ? '$' + marketPrice : 'N/A';
+    const inventoryCount = c.inventoryCount || 0;
+    const inventoryBadge = inventoryCount > 0 
+      ? '<span style="background: #4CAF50; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; margin-left: 8px;">In Stock: ' + inventoryCount + '</span>'
+      : '<span style="background: #f44336; color: white; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; margin-left: 8px;">Not in Stock</span>';
     
     li.innerHTML = '<img src="' + imageUrl + '" alt="' + cardName + '" class="card-img" onerror="this.onerror=null; this.src=\'' + imageFallback + '\'; if(this.src===\'' + imageFallback + '\') this.onerror=function(){this.src=\'https://placehold.co/70x100/94A3B8/ffffff?text=No+Image\';};">' +
       '<div class="card-details">' +
-        '<strong>' + cardName + '</strong><br>' +
+        '<strong>' + cardName + '</strong>' + inventoryBadge + '<br>' +
         '<small>' + setName + ' • #' + cardNumber + ' • ' + cardRarity + '</small><br>' +
         '<small>Market Price: ' + priceDisplay + priceNote + '</small>' +
       '</div>' +
@@ -414,17 +462,18 @@ async function addCardToInventory(card, listedPrice, language, condition) {
   }
   
   const cardPayload = {
-    mode: "1", 
-    name: card.name,
-    set: (card.set && card.set.name) || 'Unknown Set',
-    number: card.localId || card.id || '',
-    rarity: card.rarity || 'Unknown',
-    language: language === 'ja' ? 'Japanese' : (language === 'en' ? 'English' : language), 
+    card: {
+      name: card.name,
+      set_name: (card.set && card.set.name) || 'Unknown Set',
+      number: card.localId || card.id || '',
+      rarity: card.rarity || 'Unknown',
+      image_url: imageUrl,
+      price: marketPrice ? parseFloat(marketPrice) * 100 : 0,
+      source: 'tcgdex',
+      listedPrice: listedPrice
+    },
     condition: condition,
-    marketprice: marketPrice,
-    listedprice: listedPrice,
-    availability: true,
-    imageurl: imageUrl
+    language: language === 'ja' ? 'Japanese' : (language === 'en' ? 'English' : language)
   };
   
   console.log("Sending card payload:", cardPayload);
@@ -519,7 +568,7 @@ async function handleUpload() {
     allFoundCards = sortedCards;
     currentPage = 1;
 
-    displayCards(allFoundCards, currentPage, language, condition);
+    await displayCards(allFoundCards, currentPage, language, condition);
 
     document.getElementById('cardSelection').style.display = 'block';
     showMessage(uploadMsgDiv, "✅ Found " + cards.length + " matching cards", "success");
@@ -546,5 +595,3 @@ function showMessage(element, message, type) {
   element.textContent = message;
   element.className = type;
 }
-
-

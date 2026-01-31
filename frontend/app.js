@@ -556,9 +556,33 @@ async function handleUpload() {
       throw new Error("AI failed to identify card.");
     }
 
-    showMessage(uploadMsgDiv, "🔍 Searching TCGdex for " + aiCard.name + "...", "info");
+    showMessage(uploadMsgDiv, "🔍 Searching for " + aiCard.name + " in database...", "info");
     
-    const cards = await fetchCardsFromTCGdex(aiCard.name, aiCard.set, language);
+    let cards = [];
+    let source = '';
+
+    // Step 1: Try Google Sheets first
+    try {
+      const sheetResponse = await fetch(config.backendUrl + '/api/cards/search-sheet?name=' + 
+        encodeURIComponent(aiCard.name) + '&limit=100');
+      const sheetData = await sheetResponse.json();
+      
+      if (sheetData.success && sheetData.cards && sheetData.cards.length > 0) {
+        cards = sheetData.cards;
+        source = 'Google Sheets';
+        console.log('✅ Using Google Sheets results:', cards.length, 'cards');
+      } else if (sheetData.useTCGdex) {
+        console.log('⚠️ Google Sheets empty, falling back to TCGdex');
+      }
+    } catch (sheetError) {
+      console.log('Google Sheets failed, using TCGdex:', sheetError);
+    }
+
+    // Step 2: If no results from Google Sheets, use TCGdex
+    if (cards.length === 0) {
+      source = 'TCGdex';
+      cards = await fetchCardsFromTCGdex(aiCard.name, aiCard.set, language);
+    }
     
     if (cards.length === 0) {
       throw new Error("No matching cards found for " + aiCard.name);
@@ -571,7 +595,7 @@ async function handleUpload() {
     await displayCards(allFoundCards, currentPage, language, condition);
 
     document.getElementById('cardSelection').style.display = 'block';
-    showMessage(uploadMsgDiv, "✅ Found " + cards.length + " matching cards", "success");
+    showMessage(uploadMsgDiv, "✅ Found " + cards.length + " cards from " + source, "success");
     
     const totalPages = Math.ceil(allFoundCards.length / cardsPerPage);
     if (totalPages > 1) {
