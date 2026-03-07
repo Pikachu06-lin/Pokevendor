@@ -2,11 +2,47 @@
 // Google Sheets service for reading Pokemon card data with keyword matching
 
 import { google } from 'googleapis';
+import fs from 'fs';
 
 // Google Sheets configuration
 const SPREADSHEET_ID = process.env.GOOGLE_SHEET_ID;
 const SHEET_NAME = process.env.GOOGLE_SHEET_NAME || "accounting - pokevendor REAL"; // Name of your sheet tab
 const API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
+const SERVICE_ACCOUNT_PATH = process.env.GOOGLE_SERVICE_ACCOUNT_PATH;
+
+/**
+ * Initialize Google Sheets authentication
+ * Supports both API Key and Service Account
+ */
+async function getAuth() {
+  // Try Service Account first (more secure and reliable)
+  if (SERVICE_ACCOUNT_PATH) {
+    try {
+      if (fs.existsSync(SERVICE_ACCOUNT_PATH)) {
+        const serviceAccount = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_PATH, 'utf8'));
+        const auth = new google.auth.GoogleAuth({
+          credentials: serviceAccount,
+          scopes: ['https://www.googleapis.com/auth/spreadsheets.readonly'],
+        });
+        console.log('✅ Using Service Account authentication');
+        return auth;
+      } else {
+        console.warn(`⚠️ Service account file not found at: ${SERVICE_ACCOUNT_PATH}`);
+      }
+    } catch (error) {
+      console.error('Error loading service account:', error);
+    }
+  }
+
+  // Fall back to API Key (requires public sheet)
+  if (API_KEY) {
+    console.log('✅ Using API Key authentication (sheet must be public)');
+    return API_KEY;
+  }
+
+  console.warn('⚠️ No Google Sheets authentication configured');
+  return null;
+}
 
 /**
  * Search for cards in Google Sheets by name with keyword/alias matching
@@ -16,12 +52,14 @@ const API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
  */
 export async function searchCardsInSheet(cardName, limit = 100) {
   try {
-    if (!SPREADSHEET_ID || !API_KEY) {
+    const auth = await getAuth();
+    
+    if (!SPREADSHEET_ID || !auth) {
       console.log('Google Sheets not configured, skipping...');
       return [];
     }
 
-    const sheets = google.sheets({ version: 'v4', auth: API_KEY });
+    const sheets = google.sheets({ version: 'v4', auth });
 
     // Read all data from the sheet
     const response = await sheets.spreadsheets.values.get({
@@ -212,7 +250,8 @@ function extractKeyTerms(variations) {
  */
 export async function getAllCardsFromSheet() {
   try {
-    const sheets = google.sheets({ version: 'v4', auth: API_KEY });
+    const auth = await getAuth();
+    const sheets = google.sheets({ version: 'v4', auth });
 
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId: SPREADSHEET_ID,
