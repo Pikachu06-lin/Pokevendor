@@ -1,10 +1,9 @@
 // services/supabase-inventory.js
-// Supabase inventory storage with stock management
+// Supabase inventory storage - clean version matching actual table structure
 
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 
-// Make sure dotenv is loaded
 dotenv.config();
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -16,7 +15,6 @@ console.log('SUPABASE_KEY:', supabaseKey ? '✅ Found' : '❌ Missing');
 
 if (!supabaseUrl || !supabaseKey) {
   console.error('⚠️ Supabase credentials missing!');
-  console.error('Please set SUPABASE_URL and SUPABASE_KEY in your .env file');
   throw new Error('Supabase credentials are required');
 }
 
@@ -25,23 +23,25 @@ console.log('✅ Supabase client initialized successfully');
 
 class SupabaseInventory {
   constructor() {
-    this.tableName = 'inventory'; // Your Supabase table name
+    this.tableName = 'inventory';
   }
 
   /**
-   * Add a card to inventory in Supabase
-   * If card already exists (same name, set, number, condition, language), increment stock
-   * Otherwise, create new entry with stock = 1
+   * Add a card to inventory
+   * If card already exists, increment stock
    */
   async addCard(cardData) {
     try {
-      // Check if this exact card already exists
+      console.log('🔍 addCard called with full cardData:', JSON.stringify(cardData, null, 2));
+      console.log('🔍 cardData.card:', JSON.stringify(cardData.card, null, 2));
+      console.log('🔍 cardData.card.price:', cardData.card.price, 'Type:', typeof cardData.card.price);
+      console.log('🔍 cardData.sku:', cardData.sku, 'Type:', typeof cardData.sku);
+
+      // Check if card exists (by card name, language, and card number)
       const existingCard = await this.findExactCard(
         cardData.card.name,
-        cardData.card.set_name,
-        cardData.card.number,
-        cardData.condition,
-        cardData.language
+        cardData.language,
+        cardData.card.number
       );
 
       if (existingCard) {
@@ -66,21 +66,24 @@ class SupabaseInventory {
       }
 
       // Card doesn't exist - create new entry
+      // Table columns: sku, card_name, set, card_number, rarity, image_url, price, condition, language, availability, stock
       const item = {
+        sku: cardData.sku || null,
         card_name: cardData.card.name,
-        set_name: cardData.card.set_name || null,
-        card_number: cardData.card.number || null,
+        set: cardData.card.set || cardData.card.set_name || null,
+        card_number: null,//cardData.card.number || null,
         rarity: cardData.card.rarity || null,
         image_url: cardData.card.image_url || null,
-        market_price: cardData.card.price ? (cardData.card.price / 100) : 0, // Convert cents to dollars
-        listed_price: cardData.card.listedPrice || 0, // Already in dollars
-        condition: cardData.condition,
+        price: parseFloat(cardData.card.price || 0) / 100, // Ensure it's a number
+        condition: cardData.condition || 'NM',
         language: cardData.language,
-        source: cardData.card.source || 'unknown',
         availability: true,
-        added_at: new Date().toISOString(),
         stock: 1
       };
+
+      console.log('📝 About to insert item:', JSON.stringify(item, null, 2));
+      console.log('📝 Item.price:', item.price, 'Type:', typeof item.price);
+      console.log('📝 Item.sku:', item.sku, 'Type:', typeof item.sku);
 
       const { data, error } = await supabase
         .from(this.tableName)
@@ -101,30 +104,26 @@ class SupabaseInventory {
   }
 
   /**
-   * Find exact card match (name + set + number + condition + language)
+   * Find exact card match (name, language, and card number)
    */
-  async findExactCard(cardName, setName, cardNumber, condition, language) {
+  async findExactCard(cardName, language, cardNumber = null) {
     try {
       let query = supabase
         .from(this.tableName)
         .select('*')
         .ilike('card_name', cardName)
-        .eq('condition', condition)
         .eq('language', language);
-
-      if (setName) {
-        query = query.ilike('set_name', setName);
-      }
 
       if (cardNumber) {
         query = query.eq('card_number', cardNumber);
       }
 
-      const { data, error } = await query.limit(1).single();
+      const { data, error } = await query
+        .limit(1)
+        .single();
 
       if (error) {
         if (error.code === 'PGRST116') {
-          // No rows returned - card doesn't exist
           return null;
         }
         console.error('Supabase find exact card error:', error);
@@ -139,12 +138,10 @@ class SupabaseInventory {
   }
 
   /**
-   * Decrease stock by 1 (when card is sold)
-   * If stock reaches 0, optionally mark as unavailable or delete
+   * Decrease stock by 1
    */
   async decrementStock(id, deleteWhenZero = false) {
     try {
-      // Get current card
       const { data: currentCard, error: fetchError } = await supabase
         .from(this.tableName)
         .select('*')
@@ -152,24 +149,21 @@ class SupabaseInventory {
         .single();
 
       if (fetchError || !currentCard) {
-        console.error('Card not found:', fetchError);
         throw new Error('Card not found');
       }
 
       const currentStock = currentCard.stock || 0;
       
       if (currentStock <= 0) {
-        console.warn(`⚠️ Cannot decrement - stock already at 0 for card: ${currentCard.card_name}`);
+        console.warn(`⚠️ Cannot decrement - stock already at 0`);
         return currentCard;
       }
 
       const newStock = currentStock - 1;
 
       if (newStock === 0 && deleteWhenZero) {
-        // Delete the card entirely
         return await this.removeCard(id);
       } else if (newStock === 0) {
-        // Mark as unavailable but keep in database
         const { data, error } = await supabase
           .from(this.tableName)
           .update({ 
@@ -181,10 +175,9 @@ class SupabaseInventory {
           .select();
 
         if (error) throw error;
-        console.log(`📉 Stock depleted for: ${currentCard.card_name} (marked unavailable)`);
+        console.log(`📉 Stock depleted (marked unavailable)`);
         return data[0];
       } else {
-        // Just decrease stock
         const { data, error } = await supabase
           .from(this.tableName)
           .update({ 
@@ -195,7 +188,7 @@ class SupabaseInventory {
           .select();
 
         if (error) throw error;
-        console.log(`📉 Decremented stock for: ${currentCard.card_name} (Stock: ${currentStock} → ${newStock})`);
+        console.log(`📉 Decremented stock (Stock: ${currentStock} → ${newStock})`);
         return data[0];
       }
     } catch (error) {
@@ -205,7 +198,7 @@ class SupabaseInventory {
   }
 
   /**
-   * Increase stock by a specified amount
+   * Increase stock
    */
   async incrementStock(id, quantity = 1) {
     try {
@@ -226,14 +219,14 @@ class SupabaseInventory {
         .from(this.tableName)
         .update({ 
           stock: newStock,
-          availability: true, // Make available again if it was unavailable
+          availability: true,
           updated_at: new Date().toISOString()
         })
         .eq('id', id)
         .select();
 
       if (error) throw error;
-      console.log(`📈 Incremented stock for: ${currentCard.card_name} (Stock: ${currentStock} → ${newStock})`);
+      console.log(`📈 Incremented stock (Stock: ${currentStock} → ${newStock})`);
       return data[0];
     } catch (error) {
       console.error('Error incrementing stock:', error);
@@ -242,74 +235,20 @@ class SupabaseInventory {
   }
 
   /**
-   * Set stock to a specific value
-   */
-  async setStock(id, quantity) {
-    try {
-      const { data: currentCard, error: fetchError } = await supabase
-        .from(this.tableName)
-        .select('*')
-        .eq('id', id)
-        .single();
-
-      if (fetchError || !currentCard) {
-        throw new Error('Card not found');
-      }
-
-      const { data, error } = await supabase
-        .from(this.tableName)
-        .update({ 
-          stock: quantity,
-          availability: quantity > 0,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', id)
-        .select();
-
-      if (error) throw error;
-      console.log(`🔢 Set stock for: ${currentCard.card_name} (Stock: ${currentCard.stock} → ${quantity})`);
-      return data[0];
-    } catch (error) {
-      console.error('Error setting stock:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Get total stock quantity across all cards
-   */
-  async getTotalStock() {
-    try {
-      const { data, error } = await supabase
-        .from(this.tableName)
-        .select('stock');
-
-      if (error) throw error;
-
-      const totalStock = data.reduce((sum, item) => sum + (item.stock || 0), 0);
-      return totalStock;
-    } catch (error) {
-      console.error('Error getting total stock:', error);
-      return 0;
-    }
-  }
-
-  /**
-   * Get inventory count for a specific card (by name + set + number)
+   * Get inventory count
    */
   async getCardCount(cardName, setName = null, cardNumber = null) {
     try {
       let query = supabase
         .from(this.tableName)
         .select('id', { count: 'exact', head: true })
-        .ilike('card_name', cardName);
+        .ilike('card_name', `%${cardName}%`);
 
-      // Match by set name if provided
+      // Use 'set' column (not 'set_name')
       if (setName) {
-        query = query.ilike('set_name', setName);
+        query = query.ilike('set', `%${setName}%`);
       }
 
-      // Match by card number if provided (most specific identifier)
       if (cardNumber) {
         query = query.eq('card_number', cardNumber);
       }
@@ -318,42 +257,12 @@ class SupabaseInventory {
 
       if (error) {
         console.error('Supabase count error:', error);
-        throw error;
+        return 0;
       }
 
       return count || 0;
     } catch (error) {
       console.error('Error getting card count from Supabase:', error);
-      return 0;
-    }
-  }
-
-  /**
-   * Get stock quantity for a specific card
-   */
-  async getCardStock(cardName, setName = null, cardNumber = null) {
-    try {
-      let query = supabase
-        .from(this.tableName)
-        .select('stock')
-        .ilike('card_name', cardName);
-
-      if (setName) {
-        query = query.ilike('set_name', setName);
-      }
-
-      if (cardNumber) {
-        query = query.eq('card_number', cardNumber);
-      }
-
-      const { data, error } = await query;
-
-      if (error) throw error;
-
-      const totalStock = data.reduce((sum, item) => sum + (item.stock || 0), 0);
-      return totalStock;
-    } catch (error) {
-      console.error('Error getting card stock:', error);
       return 0;
     }
   }
@@ -366,11 +275,11 @@ class SupabaseInventory {
       const { data, error } = await supabase
         .from(this.tableName)
         .select('*')
-        .order('added_at', { ascending: false });
+        .order('created_at', { ascending: false });
 
       if (error) {
         console.error('Supabase select error:', error);
-        throw error;
+        return [];
       }
 
       return data || [];
@@ -392,7 +301,7 @@ class SupabaseInventory {
       }
 
       if (filters.setName) {
-        query = query.ilike('set_name', `%${filters.setName}%`);
+        query = query.ilike('set', `%${filters.setName}%`);
       }
 
       if (filters.language) {
@@ -403,21 +312,17 @@ class SupabaseInventory {
         query = query.eq('condition', filters.condition);
       }
 
-      if (filters.source) {
-        query = query.eq('source', filters.source);
-      }
-
       if (filters.inStock) {
         query = query.gt('stock', 0);
       }
 
-      query = query.order('added_at', { ascending: false });
+      query = query.order('created_at', { ascending: false});
 
       const { data, error } = await query;
 
       if (error) {
         console.error('Supabase filtered select error:', error);
-        throw error;
+        return [];
       }
 
       return data || [];
@@ -428,7 +333,60 @@ class SupabaseInventory {
   }
 
   /**
-   * Remove a card from inventory by ID
+   * Get inventory statistics
+   */
+  async getStats() {
+    try {
+      const items = await this.getAllItems();
+
+      const stats = {
+        totalCards: items.length,
+        totalStock: 0,
+        byLanguage: {},
+        byCondition: {},
+        totalValue: 0,
+        outOfStock: 0,
+        lowStock: 0
+      };
+
+      for (const item of items) {
+        const stock = item.stock || 0;
+        stats.totalStock += stock;
+
+        const lang = item.language || 'unknown';
+        stats.byLanguage[lang] = (stats.byLanguage[lang] || 0) + stock;
+
+        const condition = item.condition || 'unknown';
+        stats.byCondition[condition] = (stats.byCondition[condition] || 0) + stock;
+
+        if (item.price) {
+          stats.totalValue += parseFloat(item.price) * stock;
+        }
+
+        if (stock === 0) {
+          stats.outOfStock++;
+        } else if (stock <= 3) {
+          stats.lowStock++;
+        }
+      }
+
+      return stats;
+    } catch (error) {
+      console.error('Error getting stats from Supabase:', error);
+      return {
+        totalCards: 0,
+        totalStock: 0,
+        byLanguage: {},
+        byCondition: {},
+        totalValue: 0,
+        outOfStock: 0,
+        lowStock: 0
+      };
+    }
+  }
+
+  /**
+   * Remove a card
    */
   async removeCard(id) {
     try {
@@ -438,25 +396,22 @@ class SupabaseInventory {
         .eq('id', id)
         .select();
 
-      if (error) {
-        console.error('Supabase delete error:', error);
-        throw error;
-      }
+      if (error) throw error;
 
       if (data && data.length > 0) {
-        console.log(`🗑️ Removed card from Supabase: ${data[0].card_name} (ID: ${id})`);
+        console.log(`🗑️ Removed card: ${data[0].card_name}`);
         return data[0];
       }
 
       return null;
     } catch (error) {
-      console.error('Error removing card from Supabase:', error);
+      console.error('Error removing card:', error);
       throw error;
     }
   }
 
   /**
-   * Update a card in inventory
+   * Update a card
    */
   async updateCard(id, updates) {
     try {
@@ -471,25 +426,22 @@ class SupabaseInventory {
         .eq('id', id)
         .select();
 
-      if (error) {
-        console.error('Supabase update error:', error);
-        throw error;
-      }
+      if (error) throw error;
 
       if (data && data.length > 0) {
-        console.log(`✏️ Updated card in Supabase: ${data[0].card_name} (ID: ${id})`);
+        console.log(`✏️ Updated card: ${data[0].card_name}`);
         return data[0];
       }
 
       return null;
     } catch (error) {
-      console.error('Error updating card in Supabase:', error);
+      console.error('Error updating card:', error);
       throw error;
     }
   }
 
   /**
-   * Get total inventory count (number of unique cards)
+   * Get total inventory count
    */
   async getTotalCount() {
     try {
@@ -499,100 +451,13 @@ class SupabaseInventory {
 
       if (error) {
         console.error('Supabase total count error:', error);
-        throw error;
+        return 0;
       }
 
       return count || 0;
     } catch (error) {
-      console.error('Error getting total count from Supabase:', error);
+      console.error('Error getting total count:', error);
       return 0;
-    }
-  }
-
-  /**
-   * Get inventory statistics
-   */
-  async getStats() {
-    try {
-      const items = await this.getAllItems();
-
-      const stats = {
-        totalCards: items.length,
-        totalStock: 0,
-        bySource: {},
-        byLanguage: {},
-        byCondition: {},
-        totalValue: 0,
-        outOfStock: 0,
-        lowStock: 0 // Cards with stock <= 3
-      };
-
-      for (const item of items) {
-        const stock = item.stock || 0;
-        stats.totalStock += stock;
-
-        // Count by source
-        const source = item.source || 'unknown';
-        stats.bySource[source] = (stats.bySource[source] || 0) + stock;
-
-        // Count by language
-        const lang = item.language || 'unknown';
-        stats.byLanguage[lang] = (stats.byLanguage[lang] || 0) + stock;
-
-        // Count by condition
-        const condition = item.condition || 'unknown';
-        stats.byCondition[condition] = (stats.byCondition[condition] || 0) + stock;
-
-        // Calculate total value
-        if (item.listed_price) {
-          stats.totalValue += parseFloat(item.listed_price) * stock;
-        }
-
-        // Track out of stock
-        if (stock === 0) {
-          stats.outOfStock++;
-        } else if (stock <= 3) {
-          stats.lowStock++;
-        }
-      }
-
-      return stats;
-    } catch (error) {
-      console.error('Error getting stats from Supabase:', error);
-      return {
-        totalCards: 0,
-        totalStock: 0,
-        bySource: {},
-        byLanguage: {},
-        byCondition: {},
-        totalValue: 0,
-        outOfStock: 0,
-        lowStock: 0
-      };
-    }
-  }
-
-  /**
-   * Clear all inventory (use with caution!)
-   */
-  async clearAll() {
-    try {
-      const { data, error } = await supabase
-        .from(this.tableName)
-        .delete()
-        .neq('id', 0); // Delete all rows
-
-      if (error) {
-        console.error('Supabase clear all error:', error);
-        throw error;
-      }
-
-      const count = data ? data.length : 0;
-      console.log(`🗑️ Cleared all inventory from Supabase (${count} items removed)`);
-      return count;
-    } catch (error) {
-      console.error('Error clearing all from Supabase:', error);
-      throw error;
     }
   }
 }
