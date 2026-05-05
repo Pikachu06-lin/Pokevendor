@@ -1,5 +1,5 @@
 // server.js
-// Main server file supporting TCGdex API with Supabase catalog
+// Main server file — uses tcgapi.dev for card lookups (replaces Supabase catalog)
 
 import express from 'express';
 import cors from 'cors';
@@ -17,75 +17,57 @@ const __dirname = path.dirname(__filename);
 // Now import modules that need env variables
 import supabaseInventory from './services/supabase-inventory.js';
 import { identifyCardFromBase64 } from './services/gemini.js';
-import { searchCardsInCatalog } from './services/supabase-catalog-service.js';
+import { searchCardInTCGAPI } from './services/tcgapi-service.js'; // ← replaced supabase-catalog-service
 
 const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // Increased limit for base64 images
-app.use(express.urlencoded({ extended: true, limit: '50mb' })); // Increased limit for form data
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Serve static files from frontend folder (one level up from backend)
+// Serve static files from frontend folder
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
 
-// Supabase Catalog + TCGdex hybrid search endpoint
+// ---------------------------------------------------------------------------
+// Card Search — now powered by tcgapi.dev
+// ---------------------------------------------------------------------------
 app.get('/api/cards/search-sheet', async (req, res) => {
   try {
-    const { name, set, limit } = req.query;
+    const { name, set, cardNumber, language, limit } = req.query;
 
     if (!name) {
       return res.status(400).json({ error: 'Card name is required' });
     }
 
-    let cards = [];
-    let source = '';
+    const cards = await searchCardInTCGAPI(
+      name,
+      set || '',
+      cardNumber || '',
+      language || 'English',
+      parseInt(limit) || 20
+    );
 
-    // Try Supabase catalog first
-    try {
-      cards = await searchCardsInCatalog(name, parseInt(limit) || 100);
-      
-      if (cards && cards.length > 0) {
-        source = 'supabase-catalog';
-        console.log(`✅ Using Supabase catalog results (${cards.length} cards)`);
-        
-        return res.json({
-          success: true,
-          cards: cards,
-          count: cards.length,
-          source: source
-        });
-      }
-    } catch (catalogError) {
-      console.log('Supabase catalog failed, will try TCGdex:', catalogError.message);
-    }
-
-    // If Supabase catalog returned nothing or failed, fall back to TCGdex
-    console.log('⚠️ No results from Supabase catalog, falling back to TCGdex');
-    source = 'tcgdex-fallback';
-    
     return res.json({
       success: true,
-      cards: [],
-      count: 0,
-      source: source,
-      useTCGdex: true // Signal to frontend to use TCGdex
+      cards: cards,
+      count: cards.length,
+      source: 'tcgapi',
     });
 
   } catch (error) {
-    console.error('Error in hybrid search:', error);
-    // On error, signal to use TCGdex
-    res.json({
-      success: true,
-      cards: [],
-      count: 0,
-      source: 'error',
-      useTCGdex: true
+    console.error('Error in card search:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Card search failed',
+      details: error.message,
     });
   }
 });
 
-// AI Card Identification endpoint (for Gemini AI)
+// ---------------------------------------------------------------------------
+// AI Card Identification — Gemini vision (unchanged)
+// ---------------------------------------------------------------------------
 app.post('/api/cards/identify-image', async (req, res) => {
   try {
     const { base64Image, language } = req.body;
@@ -94,7 +76,6 @@ app.post('/api/cards/identify-image', async (req, res) => {
       return res.status(400).json({ error: 'Image data is required' });
     }
 
-    // Use your existing Gemini service
     const cardData = await identifyCardFromBase64(base64Image, language || 'en');
 
     res.json({
@@ -105,57 +86,86 @@ app.post('/api/cards/identify-image', async (req, res) => {
         setNumber: cardData.setNumber,
         rarity: cardData.rarity,
         language: cardData.language,
-        confidence: 1.0
-      }
+        confidence: 1.0,
+      },
     });
 
   } catch (error) {
     console.error('Error identifying card:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'AI identification failed',
-      details: error.message 
+      details: error.message,
     });
   }
 });
 
-// Shared authentication endpoint (used by both)
+// ---------------------------------------------------------------------------
+// Combined identify + search endpoint (one round trip from the frontend)
+// Calls Gemini then immediately searches tcgapi.dev
+// ---------------------------------------------------------------------------
+app.post('/api/cards/identify-and-search', async (req, res) => {
+  try {
+    const { base64Image } = req.body;
+
+    if (!base64Image) {
+      return res.status(400).json({ error: 'Image data is required' });
+    }
+
+    // Step 1: Gemini identifies the card
+    const cardData = await identifyCardFromBase64(base64Image);
+    console.log('🤖 Gemini identified:', cardData);
+
+    // Step 2: Search tcgapi.dev using extracted fields
+    const cards = await searchCardInTCGAPI(
+      cardData.name,
+      cardData.set || '',
+      cardData.setNumber || '',
+      cardData.language || 'English',
+      20
+    );
+
+    res.json({
+      success: true,
+      identified: cardData,       // Raw Gemini output (name, set, setNumber, language)
+      cards: cards,               // tcgapi.dev matches with prices
+      count: cards.length,
+      source: 'tcgapi',
+    });
+
+  } catch (error) {
+    console.error('Error in identify-and-search:', error);
+    res.status(500).json({
+      error: 'Identify and search failed',
+      details: error.message,
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
 app.post('/api/login', async (req, res) => {
-  console.log('Login attempt received:', req.body); // Debug log
+  console.log('Login attempt received:', req.body);
   try {
     const { email, password } = req.body;
 
-    console.log('Checking credentials...'); // Debug log
-    console.log('ENV Email:', process.env.ADMIN_EMAIL);
-    console.log('ENV Pass exists:', !!process.env.ADMIN_PASS);
-
-    // TODO: Replace with your actual authentication logic
     if (email === process.env.ADMIN_EMAIL && password === process.env.ADMIN_PASS) {
-      // Generate token (use JWT in production)
       const token = 'demo-token-' + Date.now();
-      
-      console.log('Login successful!'); // Debug log
-      res.json({
-        success: true,
-        token: token,
-        message: 'Login successful'
-      });
+      console.log('Login successful!');
+      res.json({ success: true, token, message: 'Login successful' });
     } else {
-      console.log('Invalid credentials'); // Debug log
-      res.status(401).json({
-        success: false,
-        error: 'Invalid credentials'
-      });
+      console.log('Invalid credentials');
+      res.status(401).json({ success: false, error: 'Invalid credentials' });
     }
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Login failed'
-    });
+    res.status(500).json({ success: false, error: 'Login failed' });
   }
 });
 
-// Shared inventory endpoint (used by both APIs)
+// ---------------------------------------------------------------------------
+// Inventory (unchanged — still uses Supabase for storing cards)
+// ---------------------------------------------------------------------------
 app.post('/api/add-to-inventory', async (req, res) => {
   try {
     const { card, condition, language } = req.body;
@@ -168,28 +178,26 @@ app.post('/api/add-to-inventory', async (req, res) => {
       card: card,
       condition: condition,
       language: language,
-      source: card.source || 'unknown'
+      source: card.source || 'tcgapi',
     };
 
-    // Save to Supabase
     const savedItem = await supabaseInventory.addCard(inventoryItem);
 
     res.json({
       success: true,
       message: 'Card added to inventory successfully',
-      item: savedItem
+      item: savedItem,
     });
 
   } catch (error) {
     console.error('Error adding to inventory:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to add card to inventory',
-      details: error.message 
+      details: error.message,
     });
   }
 });
 
-// Get inventory count for a specific card
 app.get('/api/inventory/count', async (req, res) => {
   try {
     const { cardName, setName, cardNumber } = req.query;
@@ -198,26 +206,22 @@ app.get('/api/inventory/count', async (req, res) => {
       return res.status(400).json({ error: 'Card name is required' });
     }
 
-    const count = await supabaseInventory.getCardCount(cardName, setName, cardNumber);
+    let count = 0;
+    try {
+      count = await supabaseInventory.getCardCount(cardName, setName, cardNumber);
+    } catch (countError) {
+      // Don't crash the request — inventory count is non-critical for the UI
+      console.warn(`⚠️  Could not get inventory count for "${cardName}":`, countError.message || countError);
+    }
 
-    res.json({
-      success: true,
-      cardName: cardName,
-      setName: setName,
-      cardNumber: cardNumber,
-      count: count
-    });
+    res.json({ success: true, cardName, setName, cardNumber, count });
 
   } catch (error) {
     console.error('Error getting inventory count:', error);
-    res.status(500).json({ 
-      error: 'Failed to get inventory count',
-      details: error.message 
-    });
+    res.json({ success: true, count: 0 }); // always return 0 rather than breaking the UI
   }
 });
 
-// Get all inventory items
 app.get('/api/inventory', async (req, res) => {
   try {
     const filters = {
@@ -225,65 +229,59 @@ app.get('/api/inventory', async (req, res) => {
       setName: req.query.setName,
       language: req.query.language,
       condition: req.query.condition,
-      source: req.query.source
+      source: req.query.source,
     };
 
-    // Remove undefined filters
-    Object.keys(filters).forEach(key => {
+    Object.keys(filters).forEach((key) => {
       if (filters[key] === undefined) delete filters[key];
     });
 
-    const items = Object.keys(filters).length > 0 
+    const items = Object.keys(filters).length > 0
       ? await supabaseInventory.getItems(filters)
       : await supabaseInventory.getAllItems();
 
-    res.json({
-      success: true,
-      items: items,
-      count: items.length
-    });
+    res.json({ success: true, items, count: items.length });
 
   } catch (error) {
     console.error('Error getting inventory:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to get inventory',
-      details: error.message 
+      details: error.message,
     });
   }
 });
 
-// Get inventory statistics
 app.get('/api/inventory/stats', async (req, res) => {
   try {
     const stats = await supabaseInventory.getStats();
-    res.json({
-      success: true,
-      stats: stats
-    });
+    res.json({ success: true, stats });
   } catch (error) {
     console.error('Error getting inventory stats:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to get inventory stats',
-      details: error.message 
+      details: error.message,
     });
   }
 });
 
-// Health check endpoint
+// ---------------------------------------------------------------------------
+// Health check
+// ---------------------------------------------------------------------------
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     apis: {
-      supabaseCatalog: 'active',
-      tcgdex: 'active (fallback)'
+      cardLookup: 'tcgapi.dev',
+      inventory: 'supabase',
+      cardIdentification: 'gemini',
     },
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 });
 
-// Route to serve main page
+// Serve main page
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html')); // TCGdex page
+  res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html'));
 });
 
 // 404 handler
@@ -294,9 +292,9 @@ app.use((req, res) => {
 // Error handler
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
-  res.status(500).json({ 
+  res.status(500).json({
     error: 'Internal server error',
-    details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    details: process.env.NODE_ENV === 'development' ? err.message : undefined,
   });
 });
 
@@ -310,14 +308,14 @@ app.listen(PORT, () => {
   ║                                                           ║
   ║   Port: ${PORT}                                             ║
   ║                                                           ║
-  ║   Card Upload (TCGdex):  http://localhost:${PORT}         ║
-  ║                                                           ║
-  ║   API Status: http://localhost:${PORT}/api/health         ║
-  ║   Inventory Stats: http://localhost:${PORT}/api/inventory/stats  ║
+  ║   Card Upload:   http://localhost:${PORT}                 ║
+  ║   Health:        http://localhost:${PORT}/api/health      ║
+  ║   Inventory:     http://localhost:${PORT}/api/inventory/stats  ║
   ║                                                           ║
   ║   📊 Data Sources:                                        ║
-  ║   1. Supabase Catalog (master_catalog table)             ║
-  ║   2. TCGdex API (fallback)                               ║
+  ║   1. tcgapi.dev  (card lookup + pricing)                 ║
+  ║   2. Supabase    (inventory storage)                     ║
+  ║   3. Gemini      (card image identification)             ║
   ║                                                           ║
   ╚═══════════════════════════════════════════════════════════╝
   `);
