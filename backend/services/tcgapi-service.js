@@ -191,25 +191,36 @@ function rankResults(results, { cardName, setName, cardNumber, isJapanese }) {
       else if (resultName.includes(pokemonCoreName) || pokemonCoreName.includes(resultName)) score += 20;
 
       // --- Set name match ---
+      // Words from Gemini's set name that are meaningful (>3 chars)
+      const setWords     = normalizedSetName ? normalizedSetName.split(' ').filter(w => w.length > 3) : [];
+      const matchedWords = setWords.filter(w => resultSet.includes(w));
+
       if (normalizedSetName) {
-        if (resultSet.includes(normalizedSetName)) score += 40;
-        else if (normalizedSetName.includes(resultSet)) score += 25;
-        else {
-          const setWords     = normalizedSetName.split(' ').filter(w => w.length > 3);
-          const matchedWords = setWords.filter(w => resultSet.includes(w));
-          score += matchedWords.length * 10;
-          if (setWords.length > 0 && matchedWords.length === setWords.length) score += 20;
+        if (resultSet.includes(normalizedSetName)) score += 40;        // full set name found
+        else if (normalizedSetName.includes(resultSet)) score += 25;   // result set is substring
+        else if (matchedWords.length > 0) {
+          score += matchedWords.length * 12;                            // partial word overlap
+          if (matchedWords.length === setWords.length) score += 20;    // all words matched
+        } else if (setWords.length > 0) {
+          // ZERO set words matched — this result is almost certainly the wrong set.
+          // Apply a penalty so a pure card-number hit can't override a correct set match.
+          score -= 60;
         }
       }
 
       // --- Card number match ---
+      // Cap number bonuses when the set is a confirmed mismatch (matchedWords === 0 and we have
+      // a setName to compare against), so correct-set results always outrank same-number
+      // results from the wrong set.
+      const setMismatch = setWords.length > 0 && matchedWords.length === 0;
+
       if (normalizedNumber && resultNumber && resultNumber === normalizedNumber) {
-        score += 80; // exact full match — strongest signal
+        score += setMismatch ? 30 : 80; // exact full match (reduced when set is wrong)
       } else if (cardSeqNum && resultSeqNum && cardSeqNum === resultSeqNum) {
-        score += 50; // same sequence number, different set total (common in JP reprints)
+        score += setMismatch ? 15 : 50; // same sequence number
       } else if (normalizedNumber && resultNumber &&
                  (resultNumber.startsWith(normalizedNumber) || normalizedNumber.startsWith(resultNumber))) {
-        score += 20; // loose prefix match
+        score += setMismatch ? 5 : 20;  // loose prefix match
       }
 
       // --- Has a price ---

@@ -168,18 +168,24 @@ app.post('/api/login', async (req, res) => {
 // ---------------------------------------------------------------------------
 app.post('/api/add-to-inventory', async (req, res) => {
   try {
-    const { card, condition, language } = req.body;
+    const { card, condition, language, quantity } = req.body;
 
     if (!card) {
       return res.status(400).json({ error: 'Card data is required' });
     }
 
     const inventoryItem = {
-      card: card,
+      card: {
+        ...card,
+        listedPrice: card.listedPrice ?? card.marketPrice ?? null,
+      },
       condition: condition,
-      language: language,
-      source: card.source || 'tcgapi',
+      language:  language,
+      quantity:  Math.max(1, parseInt(quantity) || 1),
+      source:    card.source || 'tcgapi',
     };
+
+    console.log(`📦 Adding: "${card.name}" | qty: ${inventoryItem.quantity} | listed: $${card.listedPrice} | market: $${card.marketPrice}`);
 
     const savedItem = await supabaseInventory.addCard(inventoryItem);
 

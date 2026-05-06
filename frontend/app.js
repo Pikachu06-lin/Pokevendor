@@ -223,6 +223,7 @@ async function displayCards(cards, page, condition) {
       : `<span style="background:#f44336;color:white;padding:2px 8px;border-radius:12px;font-size:12px;font-weight:bold;margin-left:8px;">Not in Stock</span>`;
 
     const li = document.createElement('li');
+    li.dataset.index = globalIdx;
     li.innerHTML = `
       <img src="${imageUrl}" alt="${c.name}" class="card-img"
            onerror="this.src='https://placehold.co/70x100/94A3B8/ffffff?text=No+Image'">
@@ -236,9 +237,15 @@ async function displayCards(cards, page, condition) {
       <div class="price-input-container">
         <label class="price-label">List Price ($):</label>
         <input type="number" step="0.01" min="0.01" value="${defaultPrice}"
-               class="listed-price-input" data-index="${globalIdx}">
+               class="listed-price-input">
+        <label class="price-label" style="margin-top:8px;">Quantity:</label>
+        <div class="quantity-control">
+          <button type="button" class="qty-btn qty-minus">−</button>
+          <input type="number" min="1" value="1" class="qty-input">
+          <button type="button" class="qty-btn qty-plus">+</button>
+        </div>
       </div>
-      <button data-index="${globalIdx}">Add to Inventory</button>
+      <button class="add-btn">Add to Inventory</button>
     `;
     listEl.appendChild(li);
   });
@@ -247,15 +254,47 @@ async function displayCards(cards, page, condition) {
 }
 
 function setupCardButtons(condition) {
-  document.getElementById('cardList').querySelectorAll('button').forEach((btn) => {
+  const listEl = document.getElementById('cardList');
+
+  // Auto-format listed price to 2 decimal places on blur (e.g. "1" → "1.00")
+  listEl.querySelectorAll('.listed-price-input').forEach(input => {
+    input.addEventListener('blur', () => {
+      const val = parseFloat(input.value);
+      if (!isNaN(val) && val > 0) input.value = val.toFixed(2);
+    });
+  });
+
+  // Quantity +/- buttons
+  listEl.querySelectorAll('.qty-minus').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = btn.closest('li').querySelector('.qty-input');
+      const val   = parseInt(input.value) || 1;
+      if (val > 1) input.value = val - 1;
+    });
+  });
+  listEl.querySelectorAll('.qty-plus').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const input = btn.closest('li').querySelector('.qty-input');
+      input.value = (parseInt(input.value) || 1) + 1;
+    });
+  });
+
+  // Add to Inventory buttons — read inputs from same <li> to avoid index mismatch
+  listEl.querySelectorAll('.add-btn').forEach((btn) => {
     btn.addEventListener('click', async function () {
-      const idx          = parseInt(btn.dataset.index);
+      const li           = btn.closest('li');
+      const idx          = parseInt(li.dataset.index);
       const selectedCard = allFoundCards[idx];
-      const priceInput   = document.querySelector(`.listed-price-input[data-index="${idx}"]`);
-      const listedPrice  = parseFloat(priceInput?.value);
+
+      const listedPrice  = parseFloat(li.querySelector('.listed-price-input')?.value);
+      const quantity     = parseInt(li.querySelector('.qty-input')?.value) || 1;
 
       if (!listedPrice || listedPrice <= 0) {
         alert('❌ Please enter a valid listed price greater than $0.00.');
+        return;
+      }
+      if (quantity < 1) {
+        alert('❌ Quantity must be at least 1.');
         return;
       }
 
@@ -263,8 +302,8 @@ function setupCardButtons(condition) {
       btn.textContent = 'Adding...';
 
       try {
-        await addCardToInventory(selectedCard, listedPrice, condition);
-        alert('✅ Card added to inventory!');
+        await addCardToInventory(selectedCard, listedPrice, quantity, condition);
+        alert(`✅ ${quantity > 1 ? quantity + 'x ' : ''}${selectedCard.name} added to inventory!`);
 
         // Reset UI
         document.getElementById('cardSelection').style.display = 'none';
@@ -287,23 +326,27 @@ function setupCardButtons(condition) {
 
 // ===== ADD TO INVENTORY (tcgapi.dev structure) =====
 
-async function addCardToInventory(card, listedPrice, condition) {
-  // Determine language from Gemini output or fall back to dropdown
+async function addCardToInventory(card, listedPrice, quantity, condition) {
   const cardLanguage = identifiedCard?.language || 'Unknown';
+
+  // Use Gemini's set name — it's more accurate than TCGPlayer's internal naming.
+  // Fall back to the API set name only if Gemini didn't identify one.
+  const setName = identifiedCard?.set || card.set || 'Unknown Set';
 
   const payload = {
     card: {
       name:        card.name,
-      set_name:    card.set        || 'Unknown Set',
+      set_name:    setName,
       number:      card.number     || '',
       rarity:      card.rarity     || 'Unknown',
       image_url:   card.imageUrl   || null,
-      price:       card.marketPrice ? Math.round(card.marketPrice * 100) : 0, // stored as cents
-      listedPrice: listedPrice,
+      marketPrice: card.marketPrice ?? null,       // raw market price for reference
+      listedPrice: listedPrice,                    // what the user set in the UI
       printing:    card.printing   || 'Normal',
       tcgplayerId: card.tcgplayerId || null,
       source:      'tcgapi',
     },
+    quantity:  quantity,
     condition: condition,
     language:  cardLanguage,
   };
